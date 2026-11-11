@@ -14,7 +14,7 @@ button{background:#2a3340;cursor:pointer}button.pri{background:#2f6f3e;border-co
 .st{color:var(--dim);font-size:12px;margin-top:4px}
 main{padding:8px;display:grid;gap:8px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
-.card.att{border-color:var(--bad);box-shadow:0 0 0 2px var(--bad) inset;animation:pulse 1s infinite}
+.card.gone{opacity:.45;filter:grayscale(1)}.card.att{border-color:var(--bad);box-shadow:0 0 0 2px var(--bad) inset;animation:pulse 1s infinite}
 @keyframes pulse{50%{background:#3a1c1c}}
 .top{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
 .nm{font-weight:700;font-size:15px}.on{color:var(--ok);font-size:12px}.off{color:var(--dim);font-size:12px}
@@ -25,7 +25,7 @@ main{padding:8px;display:grid;gap:8px}
 .kv{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--dim);font-size:12px}.kv b{color:var(--fg);font-weight:600}
 details{margin-top:5px}summary{cursor:pointer;color:var(--dim);font-size:12px}
 .chat,.near{font-size:12px;margin:4px 0 0;padding:0;list-style:none;max-height:140px;overflow:auto}
-.chat li{padding:1px 0;border-bottom:1px dashed #2a3038}.pm{color:#e0a3ff}
+.chat li{padding:1px 0;border-bottom:1px dashed #2a3038}.pm{color:#e0a3ff}.chn{display:inline-block;font-size:10px;padding:0 4px;margin-right:3px;border-radius:3px;background:#2a3340;color:#aab4c0}.pm .chn{background:#5b2a73;color:#fff}
 .near li{display:flex;justify-content:space-between}.p{color:#ffd54f}.m{color:#ff8a80}.n{color:#9ccc65}
 canvas{width:100%;height:170px;background:#0c0e10;border-radius:8px;border:1px solid var(--line);display:block}
 #act .row>*{flex:1}#act input,#act select{min-width:0}
@@ -33,7 +33,7 @@ canvas{width:100%;height:170px;background:#0c0e10;border-radius:8px;border:1px s
 </style></head><body>
 <header>
   <h1>Mingy's Hands</h1>
-  <div class="row"><input id="code" placeholder="MH-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+  <div class="row"><input id="code" placeholder="MH-XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
   <button id="go" class="pri">Connect</button></div>
   <div class="row st"><span id="st">Enter your team pairing code.</span>
   <label class="small"><input type="checkbox" id="snd"> alarm sound/vibrate</label></div>
@@ -62,7 +62,7 @@ const hex=b=>[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join(
 const cat=(...a)=>{let n=a.reduce((s,x)=>s+x.length,0),o=new Uint8Array(n),i=0;for(const x of a){o.set(x,i);i+=x.length}return o};
 const b64u=b=>btoa(String.fromCharCode(...b)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const unb64u=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
-function norm(c){let s=(c||'').toUpperCase().replace(/[\s\-_]/g,'');if(s.startsWith('MH'))s=s.slice(2);
+function norm(c){let s=(c||'').normalize('NFKC').toUpperCase().replace(/[^0-9A-Z]/g,'');if(s.length==18&&s.startsWith('MH'))s=s.slice(2);
   s=s.replace(/O/g,'0').replace(/[IL]/g,'1');return s.length==16&&[...s].every(ch=>ALPH.includes(ch))?s:''}
 async function hmac(key,data){const k=await S.importKey('raw',key,{name:'HMAC',hash:'SHA-256'},false,['sign']);return new Uint8Array(await S.sign('HMAC',k,data))}
 async function sha(d){return new Uint8Array(await S.digest('SHA-256',d))}
@@ -81,51 +81,70 @@ async function openEnv(env){if(!env||env.v!==2)throw 'ver';const nonce=unb64u(en
   const t=await tag(nonce,c);if(nonce.length!=16||t.length!=m.length||t.some((x,i)=>x!==m[i]))throw 'sig';
   const ks=await stream(nonce,c.length);return JSON.parse(td.decode(c.map((x,i)=>x^ks[i])))}
 // ---- live state ----
-const ME='web'+hex(crypto.getRandomValues(new Uint8Array(5)))+'.'+hex(crypto.getRandomValues(new Uint8Array(2)));
+const newId=()=>'web'+hex(crypto.getRandomValues(new Uint8Array(5)))+'.'+hex(crypto.getRandomValues(new Uint8Array(2)));
+let ME=newId(), AC=new AbortController(), helloT=null, rosterOk=0, rosterErr='';
+const ONLINE_MS=90000, DROP_MS=120000, STALL_MS=12000;   // online while data < 90 s old (any path), gone after 2 min (client rule)
+// age = time since we got it + how old it already was when it arrived (relayed lines); 30 s clock-skew tolerance
+function age(d,now){const lag=d._seen-d._t;return Math.max(0,now-d._seen+(lag>30000?lag:0))}
 let members={}, pipes={}, gen=0, sel=null, MK=null, lastAck={}, rosterTopic='', cmdTopic='';
 async function* lines(resp){const rd=resp.body.getReader();let buf='';for(;;){const {value,done}=await rd.read();if(done)break;
   buf+=td.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const l=buf.slice(0,i).trim();buf=buf.slice(i+1);if(l)yield l}}if(buf.trim())yield buf.trim()}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function hello(bye){const line=JSON.stringify(Object.assign({sid:ME,hello:3,view:1,env:await seal({name:'web',t:Date.now()/1000,seq:0})},bye?{bye:1}:{}));
   return fetch(NTFY+'/'+rosterTopic,{method:'POST',body:line,keepalive:!!bye})}
-async function roster(g){while(g===gen){try{const r=await fetch(NTFY+'/'+rosterTopic+'/json?since=45m');
+const bySid={};
+async function roster(g){while(g===gen){try{const r=await fetch(NTFY+'/'+rosterTopic+'/json?since=45m',{signal:AC.signal});if(!r.ok)throw 'ntfy '+r.status;rosterOk=1;rosterErr='';
   for await(const l of lines(r)){if(g!==gen)return;let ev;try{ev=JSON.parse(l)}catch(e){continue}
     if(ev.event!=='message'||!ev.message)continue;let m;try{m=JSON.parse(ev.message)}catch(e){continue}
     if(!m.hello||m.view||!m.sid||m.sid===ME)continue;let d;try{d=await openEnv(m.env)}catch(e){continue}
     if(Date.now()/1000-(d.t||0)>2700)continue;
     if(m.bye){if(pipes[m.sid])pipes[m.sid].stop=1;delete pipes[m.sid];continue}
-    if(!pipes[m.sid]){pipes[m.sid]={};pipe(g,m.sid)}}}catch(e){}await sleep(3000)}}
+    const nm=d.name||m.sid,old=bySid[nm];if(old&&old.sid!==m.sid){if(old.t>(d.t||0))continue;if(pipes[old.sid])pipes[old.sid].stop=1;delete pipes[old.sid]}
+    bySid[nm]={sid:m.sid,t:d.t||0};
+    if(!pipes[m.sid]){pipes[m.sid]={};pipe(g,m.sid)}}}catch(e){if(g!==gen)return;rosterOk=0;rosterErr=String(e&&e.message||e)}await sleep(3000)}}
 async function pipe(g,sid){const path=await lane('pipe3',sid+'>'+ME);let fails=0;
-  while(g===gen&&pipes[sid]&&!pipes[sid].stop){try{const r=await fetch(PIPE+'/'+path);if(!r.ok)throw r.status;
-    for await(const l of lines(r)){if(g!==gen)return;let m;try{m=JSON.parse(l)}catch(e){continue}
+  while(g===gen&&pipes[sid]&&!pipes[sid].stop){
+    // a stream that stops delivering (stalled transfer, phone network switch) is aborted after 12 s and re-opened:
+    // members send every <= 4 s, and fetch() itself never times out a silent body
+    const ac=new AbortController(),kill=()=>ac.abort();AC.signal.addEventListener('abort',kill);let last=Date.now();
+    const wd=setInterval(()=>{if(Date.now()-last>STALL_MS){ac.abort();pipes[sid]&&(pipes[sid].stalls=(pipes[sid].stalls||0)+1)}},2000);
+    try{const r=await fetch(PIPE+'/'+path,{signal:ac.signal});if(!r.ok)throw r.status;last=Date.now();
+    for await(const l of lines(r)){last=Date.now();if(g!==gen)return;let m;try{m=JSON.parse(l)}catch(e){continue}
       if(m.hello||!m.env)continue;try{const d=await openEnv(m.env);if(!d.name)continue;const o=members[d.name];
-        if(o&&o.seq>=d.seq&&o.t>=d.t)continue;d._seen=Date.now();members[d.name]=d;onAck(d);dirty=1}catch(e){}}fails=0}
-  catch(e){fails++}await sleep(Math.min(15000,1000*(1+fails)))}}
+        if(o&&o.seq>=d.seq&&o.t>=d.t)continue;d._t=(+d.t||0)*1000;d._seen=Date.now();
+        if(d._seen-d._t>DROP_MS)continue;   /* relayed old line: member is not online */members[d.name]=d;onAck(d);dirty=1}catch(e){}}fails=0}
+  catch(e){fails++}finally{clearInterval(wd);AC.signal.removeEventListener('abort',kill)}
+  await sleep(fails?Math.min(8000,500*2**fails):300)}}
 // ---- UI ----
 let dirty=1;const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function ago(ms){const s=Math.round(ms/1000);return s<60?s+' s':s<3600?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h'}
 function bar(v,m,c,l){const p=m?Math.max(0,Math.min(100,100*v/m)):0;return `<div class="bar"><i style="width:${p}%;background:${c}"></i><span>${l} ${v??'–'}/${m??'–'}</span></div>`}
 let beepT=0;function alarm(){if(!$('snd').checked||Date.now()-beepT<4000)return;beepT=Date.now();try{navigator.vibrate&&navigator.vibrate([200,100,200])}catch(e){}
   try{const a=new(window.AudioContext||window.webkitAudioContext)(),o=a.createOscillator();o.frequency.value=880;o.connect(a.destination);o.start();o.stop(a.currentTime+.25)}catch(e){}}
-function render(){const now=Date.now(),names=Object.keys(members).sort();let h='',anyAtt=false;
-  for(const n of names){const d=members[n],on=now-d._seen<15000,att=on&&d.att;anyAtt=anyAtt||att;
-    h+=`<div class="card${att?' att':''}" data-n="${esc(n)}"><div class="top"><span class="nm">${esc(n)}</span>
-    ${att?'<span class="alarm">BEING ATTACKED</span>':''}<span class="${on?'on':'off'}">${on?'online':'last seen '+ago(now-d._seen)+' ago'}</span></div>
+// '[pm] ' = true private message, '[Trade] ' / '[Game Chat] ' = that channel, no tag = Default
+function chatLi(c){const m=/^\[([^\]]{1,24})\] ([\s\S]*)$/.exec(c);if(!m)return `<li><span class="chn">Default</span> ${esc(c)}</li>`;
+  return m[1]==='pm'?`<li class="pm"><span class="chn">✉ PM</span> ${esc(m[2])}</li>`:`<li><span class="chn">${esc(m[1])}</span> ${esc(m[2])}</li>`}
+function render(){const now=Date.now();let names;let h='',anyAtt=false;
+  for(const n of Object.keys(members))if(age(members[n],now)>DROP_MS)delete members[n];names=Object.keys(members).sort();
+  for(const n of names){const d=members[n],on=age(d,now)<ONLINE_MS,att=on&&d.att;anyAtt=anyAtt||att;
+    h+=`<div class="card${att?' att':''}${on?'':' gone'}" data-n="${esc(n)}"><div class="top"><span class="nm">${esc(n)}</span>
+    ${att?'<span class="alarm">BEING ATTACKED</span>':''}<span class="${on?'on':'off'}">${on?(age(d,now)<5000?'online':'online · updated '+ago(age(d,now))+' ago'):'offline · last seen '+ago(age(d,now))+' ago'}</span></div>
     <div class="bars">${bar(d.hp,d.maxhp,'var(--hp)','HP')}${bar(d.mp,d.maxmp,'var(--mp)','MP')}</div>
     <div class="kv"><span>lvl <b>${d.level??'–'}</b></span><span>cap <b>${d.cap??'–'}</b></span><span>pos <b>${d.x},${d.y},${d.z}</b></span>
     <span>${esc(d.hunting?(d.mode||'hunting'):'paused')}</span>${d.target?`<span>target <b>${esc(d.target)}</b></span>`:''}</div>
     <details${sel===n?' open':''}><summary>Nearby (${(d.near||[]).length}) · chat (${(d.chat||[]).length})</summary>
     <ul class="near">${(d.near||[]).map(e=>`<li><span class="${e[1]}">${esc(e[0])}</span><span>${e[2]>=0?'+':''}${e[2]},${e[3]>=0?'+':''}${e[3]} · ${e[4]}%</span></li>`).join('')||'<li class="small">nobody on screen</li>'}</ul>
-    <ul class="chat">${(d.chat||[]).map(c=>c.startsWith('[pm] ')?`<li class="pm">✉ ${esc(c.slice(5))}</li>`:`<li>${esc(c)}</li>`).join('')||'<li class="small">no recent chat</li>'}</ul></details></div>`}
+    <ul class="chat">${(d.chat||[]).map(chatLi).join('')||'<li class="small">no recent chat</li>'}</ul></details></div>`}
   $('list').innerHTML=h||'<div class="card small">Waiting for team members… (they appear when a copy with this code is online)</div>';
   if(anyAtt)alarm();
-  const as=$('as'),cur=as.value,opts=names.filter(n=>now-members[n]._seen<15000);
+  const as=$('as'),cur=as.value,opts=names.filter(n=>age(members[n],now)<ONLINE_MS);
   if(as.dataset.k!==opts.join('|')){as.innerHTML=opts.map(n=>`<option>${esc(n)}</option>`).join('')||'<option value="">(nobody online)</option>';as.dataset.k=opts.join('|');if(opts.includes(cur))as.value=cur}
-  drawMap();const on=opts.length;$('st').textContent=K?`${on} online · ${names.length} known · ${Object.keys(pipes).length} stream(s)`:'Enter your team pairing code.'}
+  drawMap();const on=opts.length;$('st').textContent=!K?'Enter your team pairing code.':!rosterOk?(rosterErr?'Connection problem ('+rosterErr+') – retrying…':'Connecting…'):
+    on?`Connected · ${on} online${names.length>on?' · '+(names.length-on)+' offline':''}`:`Connected · waiting for team members (${Object.keys(pipes).length} announced)`}
 $('list').addEventListener('click',e=>{const c=e.target.closest('.card');if(c&&e.target.tagName!=='SUMMARY'){sel=c.dataset.n;dirty=1}});
 $('list').addEventListener('toggle',e=>{const c=e.target.closest('.card');if(c&&e.target.open)sel=c.dataset.n},true);
 function drawMap(){const cv=$('map'),g=cv.getContext('2d'),W=cv.width,H=cv.height;g.fillStyle='#0c0e10';g.fillRect(0,0,W,H);
-  const now=Date.now(),on=Object.values(members).filter(d=>now-d._seen<15000&&d.x!=null);if(!on.length){g.fillStyle='#556';g.font='16px sans-serif';g.fillText('no positions yet',12,26);return}
+  const now=Date.now(),on=Object.values(members).filter(d=>age(d,now)<ONLINE_MS&&d.x!=null);if(!on.length){g.fillStyle='#556';g.font='16px sans-serif';g.fillText('no positions yet',12,26);return}
   const c=members[sel]&&members[sel].x!=null?members[sel]:on[0];const same=on.filter(d=>d.z===c.z);
   let span=12;for(const d of same)span=Math.max(span,Math.abs(d.x-c.x)*2+6,Math.abs(d.y-c.y)*2*W/H+6);const ts=Math.min(28,W/span);
   g.strokeStyle='#1c2229';for(let x=W/2%ts;x<W;x+=ts){g.beginPath();g.moveTo(x,0);g.lineTo(x,H);g.stroke()}for(let y=H/2%ts;y<H;y+=ts){g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke()}
@@ -151,15 +170,19 @@ $('send').onclick=async()=>{if(!K)return;if(!MK){$('ack').textContent='Unlock wi
   try{const r=await fetch(NTFY+'/'+cmdTopic,{method:'POST',body:JSON.stringify({cmd:1,env:await seal(c)})});if(!r.ok)throw r.status;
     lastAck[c.nonce]={t,nonce:c.nonce};$('txt').value='';$('ack').textContent=`Sent to ${t} – waiting for its answer…`}catch(e){$('ack').textContent='Could not send: '+e}};
 // ---- connect ----
-async function connect(){const code=norm($('code').value);if(!code){$('st').textContent='That code looks wrong (MH-XXXX-XXXX-XXXX-XXXX).';return}
-  localStorage.setItem('mh_code',$('code').value.trim());$('st').textContent='Connecting…';gen++;const g=gen;members={};pipes={};
-  K=await derive(code);rosterTopic=await lane('ntfy','roster');cmdTopic=await lane('ntfy','cmd');
+async function connect(){const code=norm($('code').value);if(!code){$('st').textContent='That code looks wrong: it needs 16 letters/digits like MH-XXXX-XXXX-XXXX-XXXX (got '+$('code').value.replace(/[^0-9A-Za-z]/g,'').length+').';return}
+  $('code').value='MH-'+code.match(/..../g).join('-');localStorage.setItem('mh_code',$('code').value);
+  if(K){try{await hello(true)}catch(e){}}       // tell the copies the old viewer is gone
+  AC.abort();AC=new AbortController();if(helloT)clearInterval(helloT);ME=newId();   // fresh id = fresh streams (ppng: 1 receiver per path)
+  gen++;const g=gen;members={};pipes={};for(const k in bySid)delete bySid[k];rosterOk=0;rosterErr='';K=null;render();$('st').textContent='Connecting…';
+  K=await derive(code);if(g!==gen)return;rosterTopic=await lane('ntfy','roster');cmdTopic=await lane('ntfy','cmd');
   MK=localStorage.getItem('mh_mk_'+code);pwst();roster(g);
-  try{await hello()}catch(e){}setInterval(()=>{if(g===gen)hello().catch(()=>{})},600000)}
+  try{const r=await hello();if(!r.ok)rosterErr='announce failed ('+r.status+')'}catch(e){rosterErr='offline? '+e}
+  helloT=setInterval(()=>{if(g===gen)hello().catch(()=>{})},600000)}
 addEventListener('pagehide',()=>{if(K)hello(true).catch(()=>{})});
 // the code is never in this public page: it comes from the link (#MH-..., the part after # is never sent
 // to any server), from this phone's memory, or is typed in
-$('go').onclick=connect;const fromLink=decodeURIComponent(location.hash.slice(1));
+$('go').onclick=connect;$('code').addEventListener('keydown',e=>{if(e.key==='Enter')connect()});const fromLink=decodeURIComponent(location.hash.slice(1));
 $('code').value=norm(fromLink)?fromLink:(localStorage.getItem('mh_code')||'');
 if(norm(fromLink)){history.replaceState(null,'',location.pathname+location.search)}
 if($('code').value)connect();
