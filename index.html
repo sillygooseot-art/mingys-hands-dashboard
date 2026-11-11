@@ -29,7 +29,7 @@ details{margin-top:5px}summary{cursor:pointer;color:var(--dim);font-size:12px}
 .near li{display:flex;justify-content:space-between}.p{color:#ffd54f}.m{color:#ff8a80}.n{color:#9ccc65}
 canvas{width:100%;height:170px;background:#0c0e10;border-radius:8px;border:1px solid var(--line);display:block}
 #act .row>*{flex:1}#act input,#act select{min-width:0}
-.ack{font-size:12px;color:var(--dim)}.small{font-size:11px;color:var(--dim)}
+.ack{font-size:12px;color:var(--dim)}.warn{color:#ffb74d}.small{font-size:11px;color:var(--dim)}
 </style></head><body>
 <header>
   <h1>Mingy's Hands</h1>
@@ -55,9 +55,13 @@ canvas{width:100%;height:170px;background:#0c0e10;border-radius:8px;border:1px s
 </main>
 <script>
 'use strict';
+// ?nontfy = test the ntfy-free join (as when ntfy.sh answers HTTP 429)
+const NO_NTFY=/[?&]nontfy\b/.test(location.search);
 const NTFY='https://ntfy.sh', PIPE='https://ppng.io';
 const ALPH='0123456789ABCDEFGHJKMNPQRSTVWXYZ', te=new TextEncoder(), td=new TextDecoder();
-const $=id=>document.getElementById(id), S=crypto.subtle;
+const $=id=>document.getElementById(id), S=window.crypto&&crypto.subtle;
+// storage can be blocked (private window / strict privacy settings): never let that stop Connect
+const LS={get:k=>{try{return LS.get(k)}catch(e){return null}},set:(k,v)=>{try{LS.set(k,v)}catch(e){}},del:k=>{try{LS.del(k)}catch(e){}}};
 const hex=b=>[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
 const cat=(...a)=>{let n=a.reduce((s,x)=>s+x.length,0),o=new Uint8Array(n),i=0;for(const x of a){o.set(x,i);i+=x.length}return o};
 const b64u=b=>btoa(String.fromCharCode(...b)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
@@ -90,10 +94,11 @@ let members={}, pipes={}, gen=0, sel=null, MK=null, lastAck={}, rosterTopic='', 
 async function* lines(resp){const rd=resp.body.getReader();let buf='';for(;;){const {value,done}=await rd.read();if(done)break;
   buf+=td.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const l=buf.slice(0,i).trim();buf=buf.slice(i+1);if(l)yield l}}if(buf.trim())yield buf.trim()}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-async function hello(bye){const line=JSON.stringify(Object.assign({sid:ME,hello:3,view:1,env:await seal({name:'web',t:Date.now()/1000,seq:0})},bye?{bye:1}:{}));
+async function hello(bye){if(NO_NTFY)return {ok:true,status:200};const line=JSON.stringify(Object.assign({sid:ME,hello:3,view:1,env:await seal({name:'web',t:Date.now()/1000,seq:0})},bye?{bye:1}:{}));
   return fetch(NTFY+'/'+rosterTopic,{method:'POST',body:line,keepalive:!!bye})}
 const bySid={};
-async function roster(g){while(g===gen){try{const r=await fetch(NTFY+'/'+rosterTopic+'/json?since=45m',{signal:AC.signal});if(!r.ok)throw 'ntfy '+r.status;rosterOk=1;rosterErr='';
+let rlWait=0;const RL='ntfy.sh is rate-limiting this network (HTTP 429, shared with your other PCs/VMs)';
+async function roster(g){if(NO_NTFY){rosterErr='ntfy off (test)';return}while(g===gen){try{const r=await fetch(NTFY+'/'+rosterTopic+'/json?since=45m',{signal:AC.signal});if(r.status===429)throw 429;if(!r.ok)throw 'ntfy '+r.status;rosterOk=1;rosterErr='';rlWait=0;
   for await(const l of lines(r)){if(g!==gen)return;let ev;try{ev=JSON.parse(l)}catch(e){continue}
     if(ev.event!=='message'||!ev.message)continue;let m;try{m=JSON.parse(ev.message)}catch(e){continue}
     if(!m.hello||m.view||!m.sid||m.sid===ME)continue;let d;try{d=await openEnv(m.env)}catch(e){continue}
@@ -101,7 +106,26 @@ async function roster(g){while(g===gen){try{const r=await fetch(NTFY+'/'+rosterT
     if(m.bye){if(pipes[m.sid])pipes[m.sid].stop=1;delete pipes[m.sid];continue}
     const nm=d.name||m.sid,old=bySid[nm];if(old&&old.sid!==m.sid){if(old.t>(d.t||0))continue;if(pipes[old.sid])pipes[old.sid].stop=1;delete pipes[old.sid]}
     bySid[nm]={sid:m.sid,t:d.t||0};
-    if(!pipes[m.sid]){pipes[m.sid]={};pipe(g,m.sid)}}}catch(e){if(g!==gen)return;rosterOk=0;rosterErr=String(e&&e.message||e)}await sleep(3000)}}
+    if(!pipes[m.sid]){pipes[m.sid]={};pipe(g,m.sid)}}}catch(e){if(g!==gen)return;rosterOk=0;
+    if(e===429){rlWait=Math.min(600000,(rlWait||30000)*2);rosterErr=RL+' – direct join in use, ntfy retry in '+Math.round(rlWait/1000)+' s';await sleep(rlWait);continue}
+    rosterErr=String(e&&e.message||e)}await sleep(3000)}}
+// ntfy-free join (Jan 22:16): every copy offers its hello on one team 'bell' path; we take one, ring that copy's
+// 'door' with our viewer hello; it streams to us and tells the other members (they open their streams too)
+let doorOk=0,doorT=0;const sidOf={};
+async function ringDoor(sid){const p=await lane('pipe3','door|'+sid),ac=new AbortController(),t=setTimeout(()=>ac.abort(),20000);
+  try{const hl=JSON.stringify({sid:ME,hello:3,view:1,env:await seal({name:'web',t:Date.now()/1000,seq:0})});
+    const r=await fetch(PIPE+'/'+p,{method:'POST',body:hl+'\n',signal:ac.signal});if(r.ok){doorOk=1;doorT=Date.now()}return r.ok}catch(e){return false}finally{clearTimeout(t)}}
+async function doorJoin(g){const bell=await lane('pipe3','webjoin');let fails=0;
+  while(g===gen){const live=Object.keys(members).filter(n=>age(members[n],Date.now())<ONLINE_MS).length;
+    if(live&&Date.now()-doorT<240000){await sleep(5000);continue}
+    if(live){for(const n in sidOf)await ringDoor(sidOf[n]);doorT=Date.now();continue}      // re-announce every 4 min
+    const ac=new AbortController(),kill=()=>ac.abort(),t=setTimeout(kill,30000);AC.signal.addEventListener('abort',kill);
+    try{const r=await fetch(PIPE+'/'+bell,{signal:ac.signal});if(!r.ok)throw r.status;const txt=await r.text();
+      for(const l of txt.split('\n')){let m;try{m=JSON.parse(l)}catch(e){continue}if(!m.hello||m.view||!m.sid)continue;
+        try{await openEnv(m.env)}catch(e){continue}if(g!==gen)return;
+        if(!pipes[m.sid]){pipes[m.sid]={};pipe(g,m.sid)}await ringDoor(m.sid);fails=0}}
+    catch(e){fails++}finally{clearTimeout(t);AC.signal.removeEventListener('abort',kill)}
+    await sleep(fails?Math.min(15000,1000*fails):1000)}}
 async function pipe(g,sid){const path=await lane('pipe3',sid+'>'+ME);let fails=0;
   while(g===gen&&pipes[sid]&&!pipes[sid].stop){
     // a stream that stops delivering (stalled transfer, phone network switch) is aborted after 12 s and re-opened:
@@ -110,7 +134,8 @@ async function pipe(g,sid){const path=await lane('pipe3',sid+'>'+ME);let fails=0
     const wd=setInterval(()=>{if(Date.now()-last>STALL_MS){ac.abort();pipes[sid]&&(pipes[sid].stalls=(pipes[sid].stalls||0)+1)}},2000);
     try{const r=await fetch(PIPE+'/'+path,{signal:ac.signal});if(!r.ok)throw r.status;last=Date.now();
     for await(const l of lines(r)){last=Date.now();if(g!==gen)return;let m;try{m=JSON.parse(l)}catch(e){continue}
-      if(m.hello||!m.env)continue;try{const d=await openEnv(m.env);if(!d.name)continue;const o=members[d.name];
+      if(m.hello||!m.env||m.cmd)continue;try{const d=await openEnv(m.env);if(!d.name)continue;
+        if(m.sid){sidOf[d.name]=m.sid;if(!pipes[m.sid]){pipes[m.sid]={};pipe(g,m.sid)}}const o=members[d.name];
         if(o&&o.seq>=d.seq&&o.t>=d.t)continue;d._t=(+d.t||0)*1000;d._seen=Date.now();
         if(d._seen-d._t>DROP_MS)continue;   /* relayed old line: member is not online */members[d.name]=d;onAck(d);dirty=1}catch(e){}}fails=0}
   catch(e){fails++}finally{clearInterval(wd);AC.signal.removeEventListener('abort',kill)}
@@ -139,8 +164,11 @@ function render(){const now=Date.now();let names;let h='',anyAtt=false;
   if(anyAtt)alarm();
   const as=$('as'),cur=as.value,opts=names.filter(n=>age(members[n],now)<ONLINE_MS);
   if(as.dataset.k!==opts.join('|')){as.innerHTML=opts.map(n=>`<option>${esc(n)}</option>`).join('')||'<option value="">(nobody online)</option>';as.dataset.k=opts.join('|');if(opts.includes(cur))as.value=cur}
-  drawMap();const on=opts.length;$('st').textContent=!K?'Enter your team pairing code.':!rosterOk?(rosterErr?'Connection problem ('+rosterErr+') – retrying…':'Connecting…'):
-    on?`Connected · ${on} online${names.length>on?' · '+(names.length-on)+' offline':''}`:`Connected · waiting for team members (${Object.keys(pipes).length} announced)`}
+  drawMap();const on=opts.length,warn=rosterErr?' · '+rosterErr:'';$('st').textContent=!K?(connErr||'Enter your team pairing code and press Connect.'):
+    on?`Connected${rosterOk?'':' (direct join)'} · ${on} online${names.length>on?' · '+(names.length-on)+' offline':''}${rosterOk?'':warn}`:
+    rosterOk?`Connected · waiting for team members (${Object.keys(pipes).length} announced)`:
+    (rosterErr?'Connecting without ntfy… ('+rosterErr+')':'Connecting…')+(doorOk?' · a member answered':' · looking for a running copy (it must be online with this code)');
+  $('st').className=rosterErr&&!on?'warn':''}
 $('list').addEventListener('click',e=>{const c=e.target.closest('.card');if(c&&e.target.tagName!=='SUMMARY'){sel=c.dataset.n;dirty=1}});
 $('list').addEventListener('toggle',e=>{const c=e.target.closest('.card');if(c&&e.target.open)sel=c.dataset.n},true);
 function drawMap(){const cv=$('map'),g=cv.getContext('2d'),W=cv.width,H=cv.height;g.fillStyle='#0c0e10';g.fillRect(0,0,W,H);
@@ -159,7 +187,7 @@ async function masterKey(pw){return hex(await pbkdf2(te.encode(pw),te.encode('Mi
 function canon(c){return ['MH-CMD1',c.op,c.target,c.channel,c.to,c.text,String(c.ts),c.nonce].join('\n')}
 $('ch').onchange=()=>{$('to').style.display=$('ch').value==='pm'?'':'none'};
 $('pwset').onclick=async()=>{if(!K)return;const pw=$('pw').value;$('pw').value='';MK=pw?await masterKey(pw):null;
-  if(MK&&$('pwrem').checked)localStorage.setItem('mh_mk_'+K.code,MK);if(!MK)localStorage.removeItem('mh_mk_'+K.code);pwst()};
+  if(MK&&$('pwrem').checked)LS.set('mh_mk_'+K.code,MK);if(!MK)LS.del('mh_mk_'+K.code);pwst()};
 function pwst(){$('pwst').textContent=MK?'unlocked (only copies with the same master password obey)':'read-only'}
 function onAck(d){for(const n in lastAck){const a=lastAck[n];if(d.name===a.t&&d.ack&&d.ack.startsWith(a.nonce)){$('ack').textContent=`${a.t}: ${d.ack.slice(a.nonce.length+1)}`;delete lastAck[n]}}}
 $('send').onclick=async()=>{if(!K)return;if(!MK){$('ack').textContent='Unlock with the master password first.';return}
@@ -167,23 +195,34 @@ $('send').onclick=async()=>{if(!K)return;if(!MK){$('ack').textContent='Unlock wi
   if(!t||!text){$('ack').textContent='Pick a member and type a message.';return}if(ch==='pm'&&!to){$('ack').textContent='Type the player name.';return}
   const c={op:'chat',target:t,channel:ch,to,text,ts:Math.floor(Date.now()/1000),nonce:hex(crypto.getRandomValues(new Uint8Array(8)))};
   c.sig=hex(await hmac(Uint8Array.from(MK.match(/../g),h=>parseInt(h,16)),te.encode(canon(c))));
-  try{const r=await fetch(NTFY+'/'+cmdTopic,{method:'POST',body:JSON.stringify({cmd:1,env:await seal(c)})});if(!r.ok)throw r.status;
-    lastAck[c.nonce]={t,nonce:c.nonce};$('txt').value='';$('ack').textContent=`Sent to ${t} – waiting for its answer…`}catch(e){$('ack').textContent='Could not send: '+e}};
+  const body=JSON.stringify({cmd:1,env:await seal(c)})+'\n';lastAck[c.nonce]={t,nonce:c.nonce};$('txt').value='';
+  // Jan 22:13 (HTTP 429): commands go straight to the member's own pipe from this page (no ntfy); any other
+  // member relays them over the team mesh; ntfy only as the very last try
+  const sids=[sidOf[t],bySid[t]&&bySid[t].sid].filter(Boolean),others=Object.values(sidOf).filter(x=>!sids.includes(x));
+  const order=[...new Set([...sids,...others])];let ok=false,err='';
+  for(let a=0;a<3&&!ok;a++){if(a){$('ack').textContent=`Retrying (${a+1}/3)…`;await sleep(1500*2**a)}
+    for(const sid of order){const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),12000);
+      try{const r=await fetch(PIPE+'/'+await lane('pipe3',ME+'>'+sid),{method:'POST',body,signal:ac.signal});if(r.ok){ok=true;break}err='pipe '+r.status}
+      catch(e){err=e.name==='AbortError'?'no answer from the copy (is it running this build?)':String(e)}finally{clearTimeout(tm)}}}
+  if(!ok){try{const r=await fetch(NTFY+'/'+cmdTopic,{method:'POST',body});if(r.status===429)throw RL;if(!r.ok)throw 'ntfy '+r.status;ok=true}catch(e){err=err?err+'; '+e:String(e)}}
+  $('ack').textContent=ok?`Sent to ${t} – waiting for its answer…`:'Could not send: '+(err||'no member reachable')+' – try again in a minute.'};
 // ---- connect ----
-async function connect(){const code=norm($('code').value);if(!code){$('st').textContent='That code looks wrong: it needs 16 letters/digits like MH-XXXX-XXXX-XXXX-XXXX (got '+$('code').value.replace(/[^0-9A-Za-z]/g,'').length+').';return}
-  $('code').value='MH-'+code.match(/..../g).join('-');localStorage.setItem('mh_code',$('code').value);
+let connErr='';
+async function connect(){try{await connect2()}catch(e){K=null;connErr='Could not connect: '+(e&&e.message||e)+(window.isSecureContext&&crypto.subtle?'':' (this browser blocks WebCrypto here – open the https:// link)');render()}}
+async function connect2(){connErr='';$('st').textContent='Connecting…';const code=norm($('code').value);if(!code){K=null;connErr=$('st').textContent='That code looks wrong: it needs 16 letters/digits like MH-XXXX-XXXX-XXXX-XXXX (got '+$('code').value.replace(/[^0-9A-Za-z]/g,'').length+').';return}
+  $('code').value='MH-'+code.match(/..../g).join('-');LS.set('mh_code',$('code').value);
   if(K){try{await hello(true)}catch(e){}}       // tell the copies the old viewer is gone
   AC.abort();AC=new AbortController();if(helloT)clearInterval(helloT);ME=newId();   // fresh id = fresh streams (ppng: 1 receiver per path)
   gen++;const g=gen;members={};pipes={};for(const k in bySid)delete bySid[k];rosterOk=0;rosterErr='';K=null;render();$('st').textContent='Connecting…';
   K=await derive(code);if(g!==gen)return;rosterTopic=await lane('ntfy','roster');cmdTopic=await lane('ntfy','cmd');
-  MK=localStorage.getItem('mh_mk_'+code);pwst();roster(g);
-  try{const r=await hello();if(!r.ok)rosterErr='announce failed ('+r.status+')'}catch(e){rosterErr='offline? '+e}
+  MK=LS.get('mh_mk_'+code);pwst();roster(g);doorJoin(g);render();
+  try{const r=await hello();if(r.status===429)rosterErr=RL;else if(!r.ok)rosterErr='announce failed ('+r.status+')'}catch(e){rosterErr='ntfy unreachable ('+e+')'}
   helloT=setInterval(()=>{if(g===gen)hello().catch(()=>{})},600000)}
 addEventListener('pagehide',()=>{if(K)hello(true).catch(()=>{})});
 // the code is never in this public page: it comes from the link (#MH-..., the part after # is never sent
 // to any server), from this phone's memory, or is typed in
 $('go').onclick=connect;$('code').addEventListener('keydown',e=>{if(e.key==='Enter')connect()});const fromLink=decodeURIComponent(location.hash.slice(1));
-$('code').value=norm(fromLink)?fromLink:(localStorage.getItem('mh_code')||'');
+$('code').value=norm(fromLink)?fromLink:(LS.get('mh_code')||'');
 if(norm(fromLink)){history.replaceState(null,'',location.pathname+location.search)}
 if($('code').value)connect();
 </script></body></html>
