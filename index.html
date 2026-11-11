@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Mingy's Hands</title>
+<meta name="theme-color" content="#1b1f24">
+<style>
+:root{--bg:#14171b;--card:#1f242b;--line:#2d343d;--fg:#e6e9ee;--dim:#8b96a3;--hp:#d64545;--mp:#3f73d8;--ok:#3fb950;--bad:#c62828}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:#1b1f24;border-bottom:1px solid var(--line);padding:8px 10px}
+h1{font-size:16px;margin:0 0 6px}.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+input,select,button{font:inherit;color:var(--fg);background:#0f1215;border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+button{background:#2a3340;cursor:pointer}button.pri{background:#2f6f3e;border-color:#3d8a4f}
+#code{flex:1;min-width:0;font-family:ui-monospace,monospace;letter-spacing:.5px}
+.st{color:var(--dim);font-size:12px;margin-top:4px}
+main{padding:8px;display:grid;gap:8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.card.att{border-color:var(--bad);box-shadow:0 0 0 2px var(--bad) inset;animation:pulse 1s infinite}
+@keyframes pulse{50%{background:#3a1c1c}}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
+.nm{font-weight:700;font-size:15px}.on{color:var(--ok);font-size:12px}.off{color:var(--dim);font-size:12px}
+.alarm{background:var(--bad);color:#fff;border-radius:5px;padding:1px 6px;font-size:12px;font-weight:700}
+.bars{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:6px 0 4px}
+.bar{position:relative;height:16px;background:#0f1215;border-radius:4px;overflow:hidden;font-size:11px}
+.bar i{position:absolute;inset:0;width:0}.bar span{position:relative;padding-left:5px;line-height:16px}
+.kv{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--dim);font-size:12px}.kv b{color:var(--fg);font-weight:600}
+details{margin-top:5px}summary{cursor:pointer;color:var(--dim);font-size:12px}
+.chat,.near{font-size:12px;margin:4px 0 0;padding:0;list-style:none;max-height:140px;overflow:auto}
+.chat li{padding:1px 0;border-bottom:1px dashed #2a3038}.pm{color:#e0a3ff}
+.near li{display:flex;justify-content:space-between}.p{color:#ffd54f}.m{color:#ff8a80}.n{color:#9ccc65}
+canvas{width:100%;height:170px;background:#0c0e10;border-radius:8px;border:1px solid var(--line);display:block}
+#act .row>*{flex:1}#act input,#act select{min-width:0}
+.ack{font-size:12px;color:var(--dim)}.small{font-size:11px;color:var(--dim)}
+</style></head><body>
+<header>
+  <h1>Mingy's Hands</h1>
+  <div class="row"><input id="code" placeholder="MH-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+  <button id="go" class="pri">Connect</button></div>
+  <div class="row st"><span id="st">Enter your team pairing code.</span>
+  <label class="small"><input type="checkbox" id="snd"> alarm sound/vibrate</label></div>
+</header>
+<main>
+  <canvas id="map" width="760" height="340"></canvas>
+  <div id="list"></div>
+  <div class="card" id="act">
+    <div class="top"><span class="nm">Actions</span><span class="small" id="pwst">read-only</span></div>
+    <div class="row" style="margin-top:6px"><input id="pw" type="password" placeholder="Master password" autocomplete="current-password">
+      <button id="pwset">Unlock</button></div>
+    <div class="row small"><label><input type="checkbox" id="pwrem"> remember on this phone (stores a derived key, not the password)</label></div>
+    <div class="row" style="margin-top:6px"><select id="as"></select><select id="ch"><option value="default">Default chat</option><option value="pm">Private to…</option></select></div>
+    <div class="row" style="margin-top:6px"><input id="to" placeholder="Player name (private)" style="display:none"></div>
+    <div class="row" style="margin-top:6px"><input id="txt" placeholder="Message" maxlength="250"><button id="send" class="pri" style="flex:0 0 auto">Send</button></div>
+    <div class="ack" id="ack"></div>
+  </div>
+  <div class="small" style="text-align:center;padding:4px 0 16px">Read-only with the pairing code. Actions need the master password set in each copy's Sharing tab.</div>
+</main>
+<script>
+'use strict';
+const NTFY='https://ntfy.sh', PIPE='https://ppng.io';
+const ALPH='0123456789ABCDEFGHJKMNPQRSTVWXYZ', te=new TextEncoder(), td=new TextDecoder();
+const $=id=>document.getElementById(id), S=crypto.subtle;
+const hex=b=>[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
+const cat=(...a)=>{let n=a.reduce((s,x)=>s+x.length,0),o=new Uint8Array(n),i=0;for(const x of a){o.set(x,i);i+=x.length}return o};
+const b64u=b=>btoa(String.fromCharCode(...b)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const unb64u=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-s.length%4)%4)),c=>c.charCodeAt(0));
+function norm(c){let s=(c||'').toUpperCase().replace(/[\s\-_]/g,'');if(s.startsWith('MH'))s=s.slice(2);
+  s=s.replace(/O/g,'0').replace(/[IL]/g,'1');return s.length==16&&[...s].every(ch=>ALPH.includes(ch))?s:''}
+async function hmac(key,data){const k=await S.importKey('raw',key,{name:'HMAC',hash:'SHA-256'},false,['sign']);return new Uint8Array(await S.sign('HMAC',k,data))}
+async function sha(d){return new Uint8Array(await S.digest('SHA-256',d))}
+async function pbkdf2(pw,salt,bits){const k=await S.importKey('raw',pw,'PBKDF2',false,['deriveBits']);
+  return new Uint8Array(await S.deriveBits({name:'PBKDF2',hash:'SHA-256',salt,iterations:100000},k,bits))}
+let K=null;   // {code,enc,mac,group}
+async function derive(code){const dk=await pbkdf2(te.encode(code),te.encode('MingysHands-pair-v2'),512);
+  const enc=dk.slice(0,32),mac=dk.slice(32);return {code,enc,mac,group:hex(await sha(cat(te.encode('group|'),mac))).slice(0,24)}}
+async function lane(kind,l){return 'mh2'+hex(await sha(cat(te.encode(kind+'|'+l+'|'),K.mac))).slice(0,40)}
+async function stream(nonce,n){let out=new Uint8Array(0),ctr=0;while(out.length<n){const c=new Uint8Array(4);new DataView(c.buffer).setUint32(0,ctr++);
+  out=cat(out,await hmac(K.enc,cat(nonce,c)))}return out.slice(0,n)}
+async function tag(nonce,c){return hmac(K.mac,cat(te.encode('MH2|'+K.group),nonce,c))}
+async function seal(obj){const pt=te.encode(JSON.stringify(obj)),nonce=crypto.getRandomValues(new Uint8Array(16)),ks=await stream(nonce,pt.length);
+  const c=pt.map((x,i)=>x^ks[i]);return {v:2,n:b64u(nonce),c:b64u(c),m:b64u(await tag(nonce,c))}}
+async function openEnv(env){if(!env||env.v!==2)throw 'ver';const nonce=unb64u(env.n),c=unb64u(env.c),m=unb64u(env.m);
+  const t=await tag(nonce,c);if(nonce.length!=16||t.length!=m.length||t.some((x,i)=>x!==m[i]))throw 'sig';
+  const ks=await stream(nonce,c.length);return JSON.parse(td.decode(c.map((x,i)=>x^ks[i])))}
+// ---- live state ----
+const ME='web'+hex(crypto.getRandomValues(new Uint8Array(5)))+'.'+hex(crypto.getRandomValues(new Uint8Array(2)));
+let members={}, pipes={}, gen=0, sel=null, MK=null, lastAck={}, rosterTopic='', cmdTopic='';
+async function* lines(resp){const rd=resp.body.getReader();let buf='';for(;;){const {value,done}=await rd.read();if(done)break;
+  buf+=td.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const l=buf.slice(0,i).trim();buf=buf.slice(i+1);if(l)yield l}}if(buf.trim())yield buf.trim()}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function hello(bye){const line=JSON.stringify(Object.assign({sid:ME,hello:3,view:1,env:await seal({name:'web',t:Date.now()/1000,seq:0})},bye?{bye:1}:{}));
+  return fetch(NTFY+'/'+rosterTopic,{method:'POST',body:line,keepalive:!!bye})}
+async function roster(g){while(g===gen){try{const r=await fetch(NTFY+'/'+rosterTopic+'/json?since=45m');
+  for await(const l of lines(r)){if(g!==gen)return;let ev;try{ev=JSON.parse(l)}catch(e){continue}
+    if(ev.event!=='message'||!ev.message)continue;let m;try{m=JSON.parse(ev.message)}catch(e){continue}
+    if(!m.hello||m.view||!m.sid||m.sid===ME)continue;let d;try{d=await openEnv(m.env)}catch(e){continue}
+    if(Date.now()/1000-(d.t||0)>2700)continue;
+    if(m.bye){if(pipes[m.sid])pipes[m.sid].stop=1;delete pipes[m.sid];continue}
+    if(!pipes[m.sid]){pipes[m.sid]={};pipe(g,m.sid)}}}catch(e){}await sleep(3000)}}
+async function pipe(g,sid){const path=await lane('pipe3',sid+'>'+ME);let fails=0;
+  while(g===gen&&pipes[sid]&&!pipes[sid].stop){try{const r=await fetch(PIPE+'/'+path);if(!r.ok)throw r.status;
+    for await(const l of lines(r)){if(g!==gen)return;let m;try{m=JSON.parse(l)}catch(e){continue}
+      if(m.hello||!m.env)continue;try{const d=await openEnv(m.env);if(!d.name)continue;const o=members[d.name];
+        if(o&&o.seq>=d.seq&&o.t>=d.t)continue;d._seen=Date.now();members[d.name]=d;onAck(d);dirty=1}catch(e){}}fails=0}
+  catch(e){fails++}await sleep(Math.min(15000,1000*(1+fails)))}}
+// ---- UI ----
+let dirty=1;const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function ago(ms){const s=Math.round(ms/1000);return s<60?s+' s':s<3600?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h'}
+function bar(v,m,c,l){const p=m?Math.max(0,Math.min(100,100*v/m)):0;return `<div class="bar"><i style="width:${p}%;background:${c}"></i><span>${l} ${v??'–'}/${m??'–'}</span></div>`}
+let beepT=0;function alarm(){if(!$('snd').checked||Date.now()-beepT<4000)return;beepT=Date.now();try{navigator.vibrate&&navigator.vibrate([200,100,200])}catch(e){}
+  try{const a=new(window.AudioContext||window.webkitAudioContext)(),o=a.createOscillator();o.frequency.value=880;o.connect(a.destination);o.start();o.stop(a.currentTime+.25)}catch(e){}}
+function render(){const now=Date.now(),names=Object.keys(members).sort();let h='',anyAtt=false;
+  for(const n of names){const d=members[n],on=now-d._seen<15000,att=on&&d.att;anyAtt=anyAtt||att;
+    h+=`<div class="card${att?' att':''}" data-n="${esc(n)}"><div class="top"><span class="nm">${esc(n)}</span>
+    ${att?'<span class="alarm">BEING ATTACKED</span>':''}<span class="${on?'on':'off'}">${on?'online':'last seen '+ago(now-d._seen)+' ago'}</span></div>
+    <div class="bars">${bar(d.hp,d.maxhp,'var(--hp)','HP')}${bar(d.mp,d.maxmp,'var(--mp)','MP')}</div>
+    <div class="kv"><span>lvl <b>${d.level??'–'}</b></span><span>cap <b>${d.cap??'–'}</b></span><span>pos <b>${d.x},${d.y},${d.z}</b></span>
+    <span>${esc(d.hunting?(d.mode||'hunting'):'paused')}</span>${d.target?`<span>target <b>${esc(d.target)}</b></span>`:''}</div>
+    <details${sel===n?' open':''}><summary>Nearby (${(d.near||[]).length}) · chat (${(d.chat||[]).length})</summary>
+    <ul class="near">${(d.near||[]).map(e=>`<li><span class="${e[1]}">${esc(e[0])}</span><span>${e[2]>=0?'+':''}${e[2]},${e[3]>=0?'+':''}${e[3]} · ${e[4]}%</span></li>`).join('')||'<li class="small">nobody on screen</li>'}</ul>
+    <ul class="chat">${(d.chat||[]).map(c=>c.startsWith('[pm] ')?`<li class="pm">✉ ${esc(c.slice(5))}</li>`:`<li>${esc(c)}</li>`).join('')||'<li class="small">no recent chat</li>'}</ul></details></div>`}
+  $('list').innerHTML=h||'<div class="card small">Waiting for team members… (they appear when a copy with this code is online)</div>';
+  if(anyAtt)alarm();
+  const as=$('as'),cur=as.value,opts=names.filter(n=>now-members[n]._seen<15000);
+  if(as.dataset.k!==opts.join('|')){as.innerHTML=opts.map(n=>`<option>${esc(n)}</option>`).join('')||'<option value="">(nobody online)</option>';as.dataset.k=opts.join('|');if(opts.includes(cur))as.value=cur}
+  drawMap();const on=opts.length;$('st').textContent=K?`${on} online · ${names.length} known · ${Object.keys(pipes).length} stream(s)`:'Enter your team pairing code.'}
+$('list').addEventListener('click',e=>{const c=e.target.closest('.card');if(c&&e.target.tagName!=='SUMMARY'){sel=c.dataset.n;dirty=1}});
+$('list').addEventListener('toggle',e=>{const c=e.target.closest('.card');if(c&&e.target.open)sel=c.dataset.n},true);
+function drawMap(){const cv=$('map'),g=cv.getContext('2d'),W=cv.width,H=cv.height;g.fillStyle='#0c0e10';g.fillRect(0,0,W,H);
+  const now=Date.now(),on=Object.values(members).filter(d=>now-d._seen<15000&&d.x!=null);if(!on.length){g.fillStyle='#556';g.font='16px sans-serif';g.fillText('no positions yet',12,26);return}
+  const c=members[sel]&&members[sel].x!=null?members[sel]:on[0];const same=on.filter(d=>d.z===c.z);
+  let span=12;for(const d of same)span=Math.max(span,Math.abs(d.x-c.x)*2+6,Math.abs(d.y-c.y)*2*W/H+6);const ts=Math.min(28,W/span);
+  g.strokeStyle='#1c2229';for(let x=W/2%ts;x<W;x+=ts){g.beginPath();g.moveTo(x,0);g.lineTo(x,H);g.stroke()}for(let y=H/2%ts;y<H;y+=ts){g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke()}
+  const P=(dx,dy)=>[W/2+dx*ts,H/2+dy*ts];
+  for(const e of c.near||[]){const [x,y]=P(e[2],e[3]);g.fillStyle=e[1]==='p'?'#ffd54f':e[1]==='m'?'#ff5252':'#9ccc65';g.fillRect(x-ts*.3,y-ts*.3,ts*.6,ts*.6)}
+  g.font='bold 13px sans-serif';for(const d of same){const [x,y]=P(d.x-c.x,d.y-c.y);g.fillStyle=d.att?'#ff1744':'#40c4ff';g.beginPath();g.arc(x,y,Math.max(5,ts*.4),0,7);g.fill();
+    g.fillStyle='#fff';g.fillText(d.name,x+8,y-8)}
+  g.fillStyle='#8b96a3';g.font='12px sans-serif';g.fillText(`${c.name} ${c.x},${c.y} floor ${c.z} · ${on.length-same.length} on other floors`,8,H-8)}
+setInterval(()=>{render()},1000);
+// ---- actions ----
+async function masterKey(pw){return hex(await pbkdf2(te.encode(pw),te.encode('MingysHands-master-v1|'+K.code),256))}
+function canon(c){return ['MH-CMD1',c.op,c.target,c.channel,c.to,c.text,String(c.ts),c.nonce].join('\n')}
+$('ch').onchange=()=>{$('to').style.display=$('ch').value==='pm'?'':'none'};
+$('pwset').onclick=async()=>{if(!K)return;const pw=$('pw').value;$('pw').value='';MK=pw?await masterKey(pw):null;
+  if(MK&&$('pwrem').checked)localStorage.setItem('mh_mk_'+K.code,MK);if(!MK)localStorage.removeItem('mh_mk_'+K.code);pwst()};
+function pwst(){$('pwst').textContent=MK?'unlocked (only copies with the same master password obey)':'read-only'}
+function onAck(d){for(const n in lastAck){const a=lastAck[n];if(d.name===a.t&&d.ack&&d.ack.startsWith(a.nonce)){$('ack').textContent=`${a.t}: ${d.ack.slice(a.nonce.length+1)}`;delete lastAck[n]}}}
+$('send').onclick=async()=>{if(!K)return;if(!MK){$('ack').textContent='Unlock with the master password first.';return}
+  const t=$('as').value,text=$('txt').value.trim().replace(/\s+/g,' '),ch=$('ch').value,to=ch==='pm'?$('to').value.trim():'';
+  if(!t||!text){$('ack').textContent='Pick a member and type a message.';return}if(ch==='pm'&&!to){$('ack').textContent='Type the player name.';return}
+  const c={op:'chat',target:t,channel:ch,to,text,ts:Math.floor(Date.now()/1000),nonce:hex(crypto.getRandomValues(new Uint8Array(8)))};
+  c.sig=hex(await hmac(Uint8Array.from(MK.match(/../g),h=>parseInt(h,16)),te.encode(canon(c))));
+  try{const r=await fetch(NTFY+'/'+cmdTopic,{method:'POST',body:JSON.stringify({cmd:1,env:await seal(c)})});if(!r.ok)throw r.status;
+    lastAck[c.nonce]={t,nonce:c.nonce};$('txt').value='';$('ack').textContent=`Sent to ${t} – waiting for its answer…`}catch(e){$('ack').textContent='Could not send: '+e}};
+// ---- connect ----
+async function connect(){const code=norm($('code').value);if(!code){$('st').textContent='That code looks wrong (MH-XXXX-XXXX-XXXX-XXXX).';return}
+  localStorage.setItem('mh_code',$('code').value.trim());$('st').textContent='Connecting…';gen++;const g=gen;members={};pipes={};
+  K=await derive(code);rosterTopic=await lane('ntfy','roster');cmdTopic=await lane('ntfy','cmd');
+  MK=localStorage.getItem('mh_mk_'+code);pwst();roster(g);
+  try{await hello()}catch(e){}setInterval(()=>{if(g===gen)hello().catch(()=>{})},600000)}
+addEventListener('pagehide',()=>{if(K)hello(true).catch(()=>{})});
+// the code is never in this public page: it comes from the link (#MH-..., the part after # is never sent
+// to any server), from this phone's memory, or is typed in
+$('go').onclick=connect;const fromLink=decodeURIComponent(location.hash.slice(1));
+$('code').value=norm(fromLink)?fromLink:(localStorage.getItem('mh_code')||'');
+if(norm(fromLink)){history.replaceState(null,'',location.pathname+location.search)}
+if($('code').value)connect();
+</script></body></html>
