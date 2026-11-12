@@ -165,13 +165,14 @@ function chatLi(c){const m=/^\[([^\]]{1,24})\] ([\s\S]*)$/.exec(c);if(!m)return 
   return m[1]==='pm'?`<li class="pm"><span class="chn">✉ PM</span> ${esc(m[2])}</li>`:`<li><span class="chn">${esc(m[1])}</span> ${esc(m[2])}</li>`}
 function render(){const now=Date.now();let names;let h='',anyAtt=false;
   for(const n of Object.keys(members))if(age(members[n],now)>DROP_MS)delete members[n];names=Object.keys(members).sort();pmScan();
+  const newestBv=names.map(n=>String(members[n].bv||'')).sort().pop()||'';
   for(const n of names){const d=members[n],on=age(d,now)<ONLINE_MS,att=on&&d.patt?d.patt:'',ra=on&&d.ralarm?d.ralarm:'';anyAtt=anyAtt||!!att||!!ra;
     // Jan t1132u: alarm only when attacked by a PLAYER ('patt'); old copies' monster 'att' is ignored
     const pms=(d.chat||[]).filter(c=>realPm(c,n));if(pmSeen[n])for(const c of pms)if(!pmSeen[n].has(c))pmNew=true;pmSeen[n]=new Set(pms);
     h+=`<div class="card${att||ra?' att':''}${on?'':' gone'}" data-n="${esc(n)}"><div class="top"><span class="nm">${esc(n)}</span>
     ${att?`<span class="alarm">ATTACKED BY ${esc(att)}</span>`:''}${ra?`<span class="alarm">${esc(ra)}</span>`:''}<span class="${on?'on':'off'}">${on?(age(d,now)<5000?'online':'online · updated '+ago(age(d,now))+' ago'):'offline · last seen '+ago(age(d,now))+' ago'}</span></div>
     <div class="bars">${bar(d.hp,d.maxhp,'var(--hp)','HP')}${bar(d.mp,d.maxmp,'var(--mp)','MP')}</div>
-    <div class="kv"><span>lvl <b>${d.level??'–'}</b></span><span>cap <b>${d.cap??'–'}</b></span><span>pos <b>${d.x},${d.y},${d.z}</b></span>
+    <div class="kv"><span>lvl <b>${d.level??'–'}</b></span><span>cap <b>${d.cap??'–'}</b></span><span>pos <b>${d.x},${d.y},${d.z}</b></span><span${(d.bv||'').slice(0,13)<newestBv.slice(0,13)?' style="color:#e0a000;font-weight:bold"':''}>build <b>${esc(d.bv||'old')}</b>${(d.bv||'').slice(0,13)<newestBv.slice(0,13)?' ⚠ older':''}</span>
     <span>${esc(d.hunting?(d.mode||'hunting'):'paused')}</span>${d.target?`<span>target <b>${esc(d.target)}</b></span>`:''}</div>
     <details${sel===n?' open':''}><summary>Nearby (${(d.near||[]).length}) · chat (${(d.chat||[]).length})</summary>
     <ul class="near">${(d.near||[]).map(e=>`<li><span class="${e[1]}">${esc(e[0])}</span><span>${e[2]>=0?'+':''}${e[2]},${e[3]>=0?'+':''}${e[3]} · ${e[4]}%</span></li>`).join('')||'<li class="small">nobody on screen</li>'}</ul>
