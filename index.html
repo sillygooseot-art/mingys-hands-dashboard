@@ -147,13 +147,27 @@ function bar(v,m,c,l){const p=m?Math.max(0,Math.min(100,100*v/m)):0;return `<div
 let beepT=0;function alarm(){if(!$('snd').checked||Date.now()-beepT<4000)return;beepT=Date.now();try{navigator.vibrate&&navigator.vibrate([200,100,200])}catch(e){}
   try{const a=new(window.AudioContext||window.webkitAudioContext)(),o=a.createOscillator();o.frequency.value=880;o.connect(a.destination);o.start();o.stop(a.currentTime+.25)}catch(e){}}
 // '[pm] ' = true private message, '[Trade] ' / '[Game Chat] ' = that channel, no tag = Default
+// Jan t1132u: PM alarm only for a REAL incoming PM (tag pm, speaker not a channel name, not the member itself)
+const CHAN_WORDS=/(^|[\s\-_'])(chat|channel|trade|help|guild|party|loot|log|advert\w*|world|game|english|polish|tutor|counsellor|gamemaster|staff|news|event|rook|team|market|offtopic|rl|quests?|hunt\w*|pvp|general|retronic|lfg|sale|sell|buy|support|info|violations|rules|gm|admin|auction|newbie)($|[\s\-_'])/i;
+// Jan t1139u: Trade / Game-Chat / RL-Chat spam must NEVER show as PM. Besides the copy's own tab check, a '[pm]' line
+// that two or more members received is a channel broadcast (a real PM goes to one person) -> shown as Channel.
+let pmMulti=new Set();
+function pmScan(){const seen={};pmMulti=new Set();for(const n in members)for(const c of new Set(members[n].chat||[])){
+  const k=pmKey(c);if(!k)continue;if(seen[k]&&seen[k]!==n)pmMulti.add(k);seen[k]=n}}
+function pmKey(c){const m=/^\[pm\] ([\s\S]*)$/.exec(c||'');return m?m[1].trim().toLowerCase():''}
+function realPm(c,member){const m=/^\[pm\] ([^:]{1,30}):/.exec(c||'');if(!m)return false;const sp=m[1].trim();
+  return !CHAN_WORDS.test(sp)&&sp.toLowerCase()!==String(member||'').toLowerCase()&&!pmMulti.has(pmKey(c))}
+const pmSeen={};let pmNew=false;
 function chatLi(c){const m=/^\[([^\]]{1,24})\] ([\s\S]*)$/.exec(c);if(!m)return `<li><span class="chn">Default</span> ${esc(c)}</li>`;
+  if(m[1]==='pm'&&!realPm(c))return `<li><span class="chn">Channel</span> ${esc(m[2])}</li>`;
   return m[1]==='pm'?`<li class="pm"><span class="chn">✉ PM</span> ${esc(m[2])}</li>`:`<li><span class="chn">${esc(m[1])}</span> ${esc(m[2])}</li>`}
 function render(){const now=Date.now();let names;let h='',anyAtt=false;
-  for(const n of Object.keys(members))if(age(members[n],now)>DROP_MS)delete members[n];names=Object.keys(members).sort();
-  for(const n of names){const d=members[n],on=age(d,now)<ONLINE_MS,att=on&&d.att;anyAtt=anyAtt||att;
+  for(const n of Object.keys(members))if(age(members[n],now)>DROP_MS)delete members[n];names=Object.keys(members).sort();pmScan();
+  for(const n of names){const d=members[n],on=age(d,now)<ONLINE_MS,att=on&&d.patt?d.patt:'';anyAtt=anyAtt||!!att;
+    // Jan t1132u: alarm only when attacked by a PLAYER ('patt'); old copies' monster 'att' is ignored
+    const pms=(d.chat||[]).filter(c=>realPm(c,n));if(pmSeen[n])for(const c of pms)if(!pmSeen[n].has(c))pmNew=true;pmSeen[n]=new Set(pms);
     h+=`<div class="card${att?' att':''}${on?'':' gone'}" data-n="${esc(n)}"><div class="top"><span class="nm">${esc(n)}</span>
-    ${att?'<span class="alarm">BEING ATTACKED</span>':''}<span class="${on?'on':'off'}">${on?(age(d,now)<5000?'online':'online · updated '+ago(age(d,now))+' ago'):'offline · last seen '+ago(age(d,now))+' ago'}</span></div>
+    ${att?`<span class="alarm">ATTACKED BY ${esc(att)}</span>`:''}<span class="${on?'on':'off'}">${on?(age(d,now)<5000?'online':'online · updated '+ago(age(d,now))+' ago'):'offline · last seen '+ago(age(d,now))+' ago'}</span></div>
     <div class="bars">${bar(d.hp,d.maxhp,'var(--hp)','HP')}${bar(d.mp,d.maxmp,'var(--mp)','MP')}</div>
     <div class="kv"><span>lvl <b>${d.level??'–'}</b></span><span>cap <b>${d.cap??'–'}</b></span><span>pos <b>${d.x},${d.y},${d.z}</b></span>
     <span>${esc(d.hunting?(d.mode||'hunting'):'paused')}</span>${d.target?`<span>target <b>${esc(d.target)}</b></span>`:''}</div>
@@ -161,7 +175,7 @@ function render(){const now=Date.now();let names;let h='',anyAtt=false;
     <ul class="near">${(d.near||[]).map(e=>`<li><span class="${e[1]}">${esc(e[0])}</span><span>${e[2]>=0?'+':''}${e[2]},${e[3]>=0?'+':''}${e[3]} · ${e[4]}%</span></li>`).join('')||'<li class="small">nobody on screen</li>'}</ul>
     <ul class="chat">${(d.chat||[]).map(chatLi).join('')||'<li class="small">no recent chat</li>'}</ul></details></div>`}
   $('list').innerHTML=h||'<div class="card small">Waiting for team members… (they appear when a copy with this code is online)</div>';
-  if(anyAtt)alarm();
+  if(anyAtt||pmNew)alarm();pmNew=false;
   const as=$('as'),cur=as.value,opts=names.filter(n=>age(members[n],now)<ONLINE_MS);
   if(as.dataset.k!==opts.join('|')){as.innerHTML=opts.map(n=>`<option>${esc(n)}</option>`).join('')||'<option value="">(nobody online)</option>';as.dataset.k=opts.join('|');if(opts.includes(cur))as.value=cur}
   drawMap();const on=opts.length,warn=rosterErr?' · '+rosterErr:'';$('st').textContent=!K?(connErr||'Enter your team pairing code and press Connect.'):
@@ -178,7 +192,7 @@ function drawMap(){const cv=$('map'),g=cv.getContext('2d'),W=cv.width,H=cv.heigh
   g.strokeStyle='#1c2229';for(let x=W/2%ts;x<W;x+=ts){g.beginPath();g.moveTo(x,0);g.lineTo(x,H);g.stroke()}for(let y=H/2%ts;y<H;y+=ts){g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke()}
   const P=(dx,dy)=>[W/2+dx*ts,H/2+dy*ts];
   for(const e of c.near||[]){const [x,y]=P(e[2],e[3]);g.fillStyle=e[1]==='p'?'#ffd54f':e[1]==='m'?'#ff5252':'#9ccc65';g.fillRect(x-ts*.3,y-ts*.3,ts*.6,ts*.6)}
-  g.font='bold 13px sans-serif';for(const d of same){const [x,y]=P(d.x-c.x,d.y-c.y);g.fillStyle=d.att?'#ff1744':'#40c4ff';g.beginPath();g.arc(x,y,Math.max(5,ts*.4),0,7);g.fill();
+  g.font='bold 13px sans-serif';for(const d of same){const [x,y]=P(d.x-c.x,d.y-c.y);g.fillStyle=d.patt?'#ff1744':'#40c4ff';g.beginPath();g.arc(x,y,Math.max(5,ts*.4),0,7);g.fill();
     g.fillStyle='#fff';g.fillText(d.name,x+8,y-8)}
   g.fillStyle='#8b96a3';g.font='12px sans-serif';g.fillText(`${c.name} ${c.x},${c.y} floor ${c.z} · ${on.length-same.length} on other floors`,8,H-8)}
 setInterval(()=>{render()},1000);
@@ -203,7 +217,7 @@ $('send').onclick=async()=>{if(!K)return;if(!MK){$('ack').textContent='Unlock wi
   for(let a=0;a<3&&!ok;a++){if(a){$('ack').textContent=`Retrying (${a+1}/3)…`;await sleep(1500*2**a)}
     for(const sid of order){const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),12000);
       try{const r=await fetch(PIPE+'/'+await lane('pipe3',ME+'>'+sid),{method:'POST',body,signal:ac.signal});if(r.ok){ok=true;break}err='pipe '+r.status}
-      catch(e){err=e.name==='AbortError'?'no answer from the copy (is it running this build?)':String(e)}finally{clearTimeout(tm)}}}
+      catch(e){err=e.name==='AbortError'?'no answer from the copy (is it running this build?)':e.name==='TypeError'?'network error reaching ppng.io (phone offline / connection refused) – retrying':String(e)}finally{clearTimeout(tm)}}}
   if(!ok){try{const r=await fetch(NTFY+'/'+cmdTopic,{method:'POST',body});if(r.status===429)throw RL;if(!r.ok)throw 'ntfy '+r.status;ok=true}catch(e){err=err?err+'; '+e:String(e)}}
   $('ack').textContent=ok?`Sent to ${t} – waiting for its answer…`:'Could not send: '+(err||'no member reachable')+' – try again in a minute.'};
 // ---- connect ----
